@@ -1,0 +1,11 @@
+# Godot 4 cache (rebuilt on first open)
+.godot/
+/android/
+
+# Exports and local screenshots
+export/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
