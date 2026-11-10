@@ -19,6 +19,14 @@ func _init() -> void:
 	_save(_washer(22050), 22050, "res://audio/washer_loop.wav")
 	_save(_step_foot(44100), 44100, "res://audio/step_foot.wav")
 	_save(_step_peg(44100), 44100, "res://audio/step_peg.wav")
+	_save(_step_bad(44100), 44100, "res://audio/step_bad.wav")
+	_save(_step_friend(44100), 44100, "res://audio/step_friend.wav")
+	_save(_door_close(44100), 44100, "res://audio/door_close.wav")
+	_save(_alarm_tick(22050), 22050, "res://audio/alarm_tick.wav")
+	_save(_alarm_ring(22050), 22050, "res://audio/alarm_ring.wav")
+	_save(_scare(44100), 44100, "res://audio/scare.wav")
+	_save(_door_locked(44100), 44100, "res://audio/door_locked.wav")
+	_save(_heartbeat(44100), 44100, "res://audio/heartbeat.wav")
 	print("audio generated")
 	quit()
 
@@ -220,36 +228,59 @@ func _washer(rate: int) -> PackedFloat32Array:
 	return _loopify(out, xfade)
 
 
-## A shoe on a wooden floor: soft low thud with a little scuff.
+## A shoe landing: only a soft low bump (the heel), nothing else.
 func _step_foot(rate: int) -> PackedFloat32Array:
-	var n := int(0.25 * rate)
+	var n := int(0.2 * rate)
 	var out := PackedFloat32Array()
 	out.resize(n)
-	var lp := Biquad.new().lowpass(500.0, 0.8, rate)
-	var bp := Biquad.new().bandpass(1800.0, 1.2, rate)
+	var lp := Biquad.new().lowpass(320.0, 0.7, rate)
 	for i in n:
 		var t := float(i) / rate
-		var thud := sin(TAU * 85.0 * t) * exp(-t / 0.035) * 0.9
-		var body := lp.process(_noise()) * exp(-t / 0.03) * 1.5
-		var scuff := bp.process(_noise()) * exp(-maxf(0.0, t - 0.02) / 0.04) * 0.25 * clampf((t - 0.01) / 0.02, 0.0, 1.0)
-		out[i] = clampf(t / 0.002, 0.0, 1.0) * (thud + body) + scuff
+		var thud := sin(TAU * 78.0 * t) * exp(-t / 0.045)
+		var body := lp.process(_noise()) * exp(-t / 0.022) * 1.6
+		out[i] = clampf(t / 0.003, 0.0, 1.0) * (thud + body)
 	return out
 
 
-## A wooden peg leg striking the floor: hard, hollow "tok" with a short ring.
+## The wooden leg. It drags a little, then lands: a hard, dry knock with the short hollow
+## answer of the wood. Still a bump (no ping), but one you learn to dread.
 func _step_peg(rate: int) -> PackedFloat32Array:
-	var n := int(0.25 * rate)
+	var n := int(0.34 * rate)
 	var out := PackedFloat32Array()
 	out.resize(n)
-	var bp := Biquad.new().bandpass(2500.0, 2.0, rate)
+	var lp := Biquad.new().lowpass(900.0, 0.7, rate)
+	var rap := Biquad.new().bandpass(1100.0, 0.8, rate)
+	var drag := Biquad.new().bandpass(520.0, 1.2, rate)
 	for i in n:
 		var t := float(i) / rate
-		var knock := sin(TAU * 420.0 * t) * exp(-t / 0.02) * 0.8
-		knock += sin(TAU * 980.0 * t) * exp(-t / 0.012) * 0.5
-		knock += sin(TAU * 1730.0 * t) * exp(-t / 0.006) * 0.3
-		var click := bp.process(_noise()) * exp(-t / 0.002) * 1.2
-		var floor_thud := sin(TAU * 110.0 * t) * exp(-t / 0.025) * 0.4
-		out[i] = clampf(t / 0.0005, 0.0, 1.0) * (knock + click + floor_thud)
+		var v := drag.process(_noise()) * clampf(t / 0.03, 0.0, 1.0) * clampf((0.1 - t) / 0.03, 0.0, 1.0) * 0.16
+		var k := t - 0.1
+		if k >= 0.0:
+			var thump := sin(TAU * 150.0 * k) * exp(-k / 0.03)
+			var wood := sin(TAU * 310.0 * k) * exp(-k / 0.045) * 0.45
+			var body := lp.process(_noise()) * exp(-k / 0.014) * 1.4
+			var knock := rap.process(_noise()) * exp(-k / 0.004) * 0.7
+			v += clampf(k / 0.0012, 0.0, 1.0) * (thump + wood + body + knock)
+		out[i] = v
+	return out
+
+
+## The bad person's shoe: a heavy man putting his whole weight down. Lower and longer than
+## anyone else's step, heel then sole, and the floor gives under it.
+func _step_bad(rate: int) -> PackedFloat32Array:
+	var n := int(0.4 * rate)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var lp := Biquad.new().lowpass(240.0, 0.7, rate)
+	for i in n:
+		var t := float(i) / rate
+		var heel := sin(TAU * (58.0 - 30.0 * minf(t, 0.2)) * t) * exp(-t / 0.085)
+		var body := lp.process(_noise()) * exp(-t / 0.03) * 1.5
+		var v := clampf(t / 0.004, 0.0, 1.0) * (heel + body)
+		var k := t - 0.075
+		if k >= 0.0: # the sole comes down after the heel
+			v += sin(TAU * 74.0 * k) * exp(-k / 0.05) * 0.55 * clampf(k / 0.004, 0.0, 1.0)
+		out[i] = v
 	return out
 
 
@@ -344,3 +375,122 @@ func _voice(out: PackedFloat32Array, rate: int, start: float, end: float) -> voi
 				t += dur
 			t += rng.randf_range(0.05, 0.12)
 		t += rng.randf_range(0.25, 0.45)
+
+
+## The friend's sneaker: a light, short bump (no squeak, no ping).
+func _step_friend(rate: int) -> PackedFloat32Array:
+	var n := int(0.13 * rate)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var lp := Biquad.new().lowpass(520.0, 0.7, rate)
+	for i in n:
+		var t := float(i) / rate
+		var thump := sin(TAU * 115.0 * t) * exp(-t / 0.02) * 0.8
+		var body := lp.process(_noise()) * exp(-t / 0.012)
+		out[i] = clampf(t / 0.002, 0.0, 1.0) * (thump + body)
+	return out
+
+
+## A door closing: a whoosh of air, then a solid wooden thump and the latch.
+func _door_close(rate: int) -> PackedFloat32Array:
+	var n := int(0.6 * rate)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var lp := Biquad.new().lowpass(400.0, 0.7, rate)
+	var air := Biquad.new().bandpass(900.0, 0.8, rate)
+	var bp := Biquad.new().bandpass(2600.0, 3.0, rate)
+	for i in n:
+		var t := float(i) / rate
+		var whoosh := air.process(_noise()) * clampf(t / 0.25, 0.0, 1.0) * (1.0 if t < 0.3 else 0.0) * 0.25
+		var th := t - 0.3
+		var hit := 0.0
+		if th > 0.0:
+			hit = sin(TAU * 75.0 * th) * exp(-th / 0.06) * 1.0
+			hit += lp.process(_noise()) * exp(-th / 0.04) * 1.4
+			hit += bp.process(_noise()) * exp(-maxf(0.0, th - 0.03) / 0.005) * 0.6 * float(th > 0.03)
+		out[i] = whoosh + hit
+	return out
+
+
+## A wind-up alarm clock ticking (1 s loop, two ticks).
+func _alarm_tick(rate: int) -> PackedFloat32Array:
+	var n := rate
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var bp := Biquad.new().bandpass(3000.0, 4.0, rate)
+	for i in n:
+		var t := float(i) / rate
+		var t1 := fmod(t, 0.5)
+		var tick := bp.process(_noise()) * exp(-t1 / 0.003) * 1.2
+		tick += sin(TAU * 2100.0 * t1) * exp(-t1 / 0.006) * 0.3
+		out[i] = tick
+	return out
+
+
+## The alarm going off: a hammer hitting two bells very fast. Loud and harsh, 5 s.
+func _alarm_ring(rate: int) -> PackedFloat32Array:
+	var n := int(5.0 * rate)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var strike_rate := 22.0
+	for i in n:
+		var t := float(i) / rate
+		var ts := fmod(t, 1.0 / strike_rate)
+		var bell_a := sin(TAU * 2300.0 * t) + 0.5 * sin(TAU * 5900.0 * t)
+		var bell_b := sin(TAU * 2750.0 * t) + 0.4 * sin(TAU * 6800.0 * t)
+		var which := int(t * strike_rate) % 2
+		var env := exp(-ts / 0.03)
+		var tail := clampf((5.0 - t) / 0.15, 0.0, 1.0)
+		out[i] = (bell_a * (1 - which) + bell_b * which) * env * tail + _noise() * env * 0.05
+	return out
+
+
+## Caught: a heavy body hit, a rush of breath and cloth right at your ear, a low drone.
+func _scare(rate: int) -> PackedFloat32Array:
+	var n := int(1.8 * rate)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var lp := Biquad.new().lowpass(260.0, 0.8, rate)
+	var breath := Biquad.new().bandpass(1500.0, 0.9, rate)
+	for i in n:
+		var t := float(i) / rate
+		var hit := sin(TAU * (70.0 - 25.0 * minf(t, 0.3)) * t) * exp(-t / 0.22) * 1.4
+		var thud := lp.process(_noise()) * exp(-t / 0.08) * 1.6
+		var rush := breath.process(_noise()) * clampf(t / 0.05, 0.0, 1.0) * exp(-t / 0.5) * 0.9
+		var drone := (sin(TAU * 46.0 * t) + 0.6 * sin(TAU * 49.0 * t)) * clampf(t / 0.2, 0.0, 1.0) * clampf((1.8 - t) / 0.7, 0.0, 1.0) * 0.5
+		out[i] = hit + thud + rush + drone
+	return out
+
+
+## A locked door: the handle pressed down twice, the latch rattling in its plate.
+func _door_locked(rate: int) -> PackedFloat32Array:
+	var n := int(0.7 * rate)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var bp := Biquad.new().bandpass(2100.0, 4.0, rate)
+	var lp := Biquad.new().lowpass(500.0, 0.8, rate)
+	for i in n:
+		var t := float(i) / rate
+		var v := 0.0
+		for t0 in [0.0, 0.11, 0.3, 0.4]:
+			var lt: float = t - t0
+			if lt >= 0.0:
+				v += bp.process(_noise()) * exp(-lt / 0.012) * 1.2 + lp.process(_noise()) * exp(-lt / 0.03) * 0.7
+		out[i] = v
+	return out
+
+
+## One heartbeat, heard from inside: lub-dub, two soft low thumps.
+func _heartbeat(rate: int) -> PackedFloat32Array:
+	var n := int(0.42 * rate)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var lp := Biquad.new().lowpass(120.0, 0.7, rate)
+	for i in n:
+		var t := float(i) / rate
+		var v := sin(TAU * 52.0 * t) * exp(-t / 0.045) * clampf(t / 0.004, 0.0, 1.0)
+		var t2 := t - 0.15
+		if t2 > 0.0:
+			v += sin(TAU * 66.0 * t2) * exp(-t2 / 0.035) * clampf(t2 / 0.004, 0.0, 1.0) * 0.7
+		out[i] = v + lp.process(_noise()) * exp(-t / 0.05) * 0.25
+	return out

@@ -92,6 +92,43 @@
 - [x] New sounds: dripping tap, washing machine, footsteps; muffled behind closed doors
 - [ ] Sounds verified by ear
 
+## Iteration 1.3 (2026-11-08)
+
+- [x] Objects make physical sense (no floating handles, lamps, loose clutter); placement checker tool
+- [x] Sound is visual: every audible source faintly visible, blurry, through walls, following its loudness
+- [x] Scan = a wave going out from you, 360°, look around inside the snapshot
+- [x] Bad person rebuilt as a realistic human silhouette (peg leg kept)
+- [ ] Different people: build-based silhouettes and step sounds (future, for the story)
+- [ ] Torso seams visible in sighted mode (fine in echo view)
+
+## Iteration 1.4 (2026-11-09)
+
+- [x] Scan: no frame drop, cooldown 0.45 s, outward wave from you, doors always clear
+- [x] More house: back hall, stair hall, workshop, a full second floor with stairs (9 new rooms)
+- [x] Three people: bad person (red wooden leg), stranger (heavy, white steps), friend (light-green sneaker squeak)
+- [x] Sealed rooms block sound (heard and seen); loud sounds still show a little
+- [x] Alarm clock (delayed loud ring), door sounds, hammer held in the lower right, food in colour (smell)
+- [x] Controls always on screen; `rules.md` written
+- [ ] Sounds verified by ear (new ones included)
+- [ ] People react to the player's noise
+
+## Iteration 1.5 (2026-11-09)
+
+- [x] Scan is a ring out from your view (not floor / wall / ceiling order)
+- [x] Acoustics: per-object loudness, distance, doors, walls and floors multiply
+- [x] Plain footsteps; close = clear, other floor = weak but the wooden knock survives
+- [x] Held objects shown as a white outline; animated coloured steam from food
+- [ ] Sounds verified by ear (all of them)
+
+## Iteration 1.6 (2026-11-09)
+
+- [x] Scan: a wave from the listener, fast, one scan at a time
+- [x] Shadows behind things filled with small dim dots
+- [x] Interactive things (doors, TV, clock, grabbables) in structured detail; realistic small props
+- [x] Touch is visual (door swing, TV, held things as outlines)
+- [x] No lamp lighting or shadows; TV can be turned off
+- [ ] The story (horror) on top of these rules
+
 ## Done when
 
 You can launch it, walk blind, press Space, watch the room draw itself top to bottom in dots, turn around and still see that frozen image fade away, tell glass and hollow apart from everything else, and notice footstep ripples crossing the floor in the dark.
