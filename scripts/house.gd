@@ -13,12 +13,32 @@ extends Node3D
 ##   Bedroom      x 4.4..9.8, z 0.8..5     (door from hallway)
 ##   Kitchen      x 10.2..14, z -2.5..2.5
 ##   Laundry      x 10.2..14, z -4.7..-2.7 (door from kitchen)
+##   Back hall    x 10.2..14, z 2.7..5     (arch from the kitchen)
+##   Stair hall   x 14.2..17.4, z 0.7..5   (stairs up along the east wall)
+##   Workshop     x 14.2..17.4, z -4.7..0.5 (door from the stair hall)
+##   Upstairs (floor at y 2.7): corridor, landing, guest room, bathroom, kids' room,
+##   storage, master bedroom, office. Built in `house_upstairs.gd`.
+##
+## Rooms and the passages between them (`rooms`, `passages`) are what sound travels
+## through: a room whose doors are all closed is sealed (see `connected`).
 
 signal door_toggled(door: StaticBody3D, open: bool)
+
+const Upstairs := preload("res://scripts/house_upstairs.gd")
+const Props := preload("res://scripts/props.gd")
 
 const SOLID := 1
 const HOLLOW := 2
 const GLASS := 3
+const WOODEN_LEG := 5 # the bad person's peg (scan dots are red); 4 = people
+const DOOR := 6 # doors: an echo always picks them out clearly (dense dots, crisp frame)
+const FLOOR2 := 2.7 # upstairs floor level
+const RAMP_LAYER := 3 # invisible stair ramps: the player walks on them, scan rays ignore them
+
+# How much of a sound survives each thing it has to get through (a fraction of its loudness).
+const DOOR_CLOSED := 0.12 # a shut door (-18 dB)
+const WALL := 0.04        # a wall (-28 dB)
+const FLOOR_SLAB := 0.05  # the floor between storeys (-26 dB)
 
 const H := 2.6 # ceiling height
 const T := 0.2 # wall thickness
@@ -53,6 +73,7 @@ var _paint := C_WALL
 var _mats := {}
 var _glass_mat: StandardMaterial3D
 var _screen_mat: StandardMaterial3D
+var tv_screen_mat: StandardMaterial3D # the TV's own screen (the study monitor shares _screen_mat)
 var rng := RandomNumberGenerator.new()
 
 
@@ -68,6 +89,7 @@ func _ready() -> void:
 	_screen_mat.emission_enabled = true
 	_screen_mat.emission = Color(0.35, 0.55, 0.9)
 	_screen_mat.emission_energy_multiplier = 1.4
+	tv_screen_mat = _screen_mat.duplicate()
 
 	_build_shell()
 	_build_living_room()
@@ -77,6 +99,8 @@ func _ready() -> void:
 	_build_bedroom()
 	_build_kitchen()
 	_build_laundry()
+	Upstairs.new().build(self)
+	_register_rooms()
 
 
 # --- Builders -------------------------------------------------------------
@@ -160,25 +184,31 @@ func group(pos: Vector3, yaw_deg := 0.0) -> Node3D:
 	return g
 
 
+## Something you can touch or use (a door, the TV, the alarm clock): the echo shows it in
+## detail, and touching it shows it as an outline. `use` is the meta that says what E does.
+func interactive(body: StaticBody3D, use := "") -> StaticBody3D:
+	body.add_to_group("interactive")
+	if use != "":
+		body.set_meta(use, true)
+	return body
+
+
 ## Small objects the player can pick up.
 func grabbable(body: StaticBody3D, half_height: float) -> StaticBody3D:
 	body.add_to_group("grabbable")
+	body.add_to_group("interactive")
 	body.set_meta("half_height", half_height)
 	return body
 
 
-## Only the main living-room light casts shadows; shadowed omni lights are expensive.
+## The lamp fixture only. Nothing lights the house: nobody plays in the light.
 func ceiling_light(pos: Vector3, rng_m: float, energy := 1.0, shadows := false) -> void:
 	paint(C_WHITE)
-	cyl(Vector3(pos.x, H - 0.06, pos.z), 0.2, 0.1, HOLLOW, "CeilingLamp")
-	var l := OmniLight3D.new()
-	l.position = Vector3(pos.x, H - 0.25, pos.z)
-	l.omni_range = rng_m
-	l.light_energy = energy
-	l.light_color = Color(1.0, 0.9, 0.78)
-	l.shadow_enabled = shadows
-	l.omni_shadow_mode = OmniLight3D.SHADOW_DUAL_PARABOLOID
-	add_child(l)
+	# A flat dome flush with the ceiling (a hanging puck reads as a floating object in echo dots).
+	var lamp := cyl(Vector3(pos.x, pos.y + H - 0.025, pos.z), 0.22, 0.05, HOLLOW, "CeilingLamp")
+	(lamp.get_child(1).mesh as CylinderMesh).bottom_radius = 0.17
+	lamp.collision_layer = 0 # too small and flush to resolve by echo; seen only with eyes
+	# No light is emitted: the sighted view is only a debug view (one flat light in main.gd).
 
 
 # --- Reusable furniture ---------------------------------------------------
@@ -195,13 +225,15 @@ func chair(pos: Vector3, yaw := 0.0, col := C_WOOD) -> void:
 
 
 ## Table with four legs.
-func table(top_center: Vector3, size: Vector3, col := C_WOOD) -> void:
+func table(top_center: Vector3, size: Vector3, col := C_WOOD, floor_y := -1.0) -> void:
+	if floor_y < 0.0: # standing on whichever floor is below the top
+		floor_y = FLOOR2 if top_center.y > FLOOR2 else 0.0
 	paint(col)
 	box(top_center, size, SOLID, "TableTop")
-	var leg_h := top_center.y - size.y / 2
+	var leg_h := top_center.y - size.y / 2 - floor_y
 	for sx in [-1, 1]:
 		for sz in [-1, 1]:
-			box(Vector3(top_center.x + sx * (size.x / 2 - 0.06), leg_h / 2, top_center.z + sz * (size.z / 2 - 0.06)),
+			box(Vector3(top_center.x + sx * (size.x / 2 - 0.06), floor_y + leg_h / 2, top_center.z + sz * (size.z / 2 - 0.06)),
 				Vector3(0.05, leg_h, 0.05), SOLID, "TableLeg")
 
 
@@ -268,7 +300,8 @@ func picture(center: Vector3, w: float, h: float, normal_axis: String) -> void:
 
 func rug(center: Vector3, w: float, d: float, col: Color) -> void:
 	paint(col)
-	box(Vector3(center.x, 0.006, center.z), Vector3(w, 0.012, d), SOLID, "Rug")
+	var y := FLOOR2 + 0.012 if center.y >= FLOOR2 - 0.01 else 0.0
+	box(Vector3(center.x, y + 0.006, center.z), Vector3(w, 0.012, d), SOLID, "Rug")
 
 
 # --- Doors ----------------------------------------------------------------
@@ -283,9 +316,17 @@ func door(hinge: Vector3, width: float, label: String, swing := 1) -> void:
 	paint(C_WHITE)
 	var panel := box(Vector3(width / 2, 1.04, 0), Vector3(width - 0.02, 2.08, 0.05), HOLLOW, label, pivot)
 	paint(C_METAL)
-	sph(Vector3(width - 0.1, 1.0, 0.05 * swing), 0.03, SOLID, "Handle", panel)
-	sph(Vector3(width - 0.1, 1.0, -0.05 * swing), 0.03, SOLID, "Handle", panel)
+	# Handles sit on both faces, near the free edge, at hand height (panel-local coordinates).
+	var hx := width / 2 - 0.1
+	var hy := 1.0 - 1.04
+	for side in [1, -1]:
+		cyl(Vector3(hx, hy, side * 0.045), 0.012, 0.04, SOLID, "HandleNeck", panel).rotation_degrees.x = 90
+		var lever := cyl(Vector3(hx - 0.05, hy, side * 0.07), 0.012, 0.12, SOLID, "Handle", panel)
+		lever.rotation_degrees.z = 90
 	panel.set_meta("door", true)
+	panel.add_to_group("interactive")
+	panel.set_meta("echo_material", DOOR)
+	panel.set_meta("size", Vector3(width - 0.02, 2.08, 0.05))
 	panel.set_meta("open", false)
 	panel.set_meta("open_deg", -100.0 if swing > 0 else 100.0)
 
@@ -333,7 +374,7 @@ func _build_living_room() -> void:
 	box(Vector3(4.1, H / 2, 1.9), Vector3(T, H, 2.6))
 	box(Vector3(4.1, 2.35, 0), Vector3(T, 0.5, 1.2))
 
-	ceiling_light(Vector3(-1.5, 0, 0), 7.0, 1.2, true)
+	ceiling_light(Vector3(-1.5, 0, 0), 7.0, 1.2)
 	ceiling_light(Vector3(1.8, 0, -1.2), 5.0, 0.8)
 
 	# Couch + cushions
@@ -360,10 +401,11 @@ func _build_living_room() -> void:
 	rug(Vector3(-1.8, 0, 0), 2.2, 1.9, C_RED)
 	table(Vector3(-1.8, 0.42, 0), Vector3(0.8, 0.06, 1.3))
 	paint(C_WHITE)
-	grabbable(cyl(Vector3(-1.75, 0.5, -0.35), 0.045, 0.1, HOLLOW, "Mug"), 0.05)
-	grabbable(cyl(Vector3(-1.9, 0.6, 0.3), 0.04, 0.3, GLASS, "Bottle"), 0.15)
+	Props.mug(self, "Mug", Vector3(-1.75, 0.45, -0.35), Color(0.93, 0.93, 0.9))
+	Props.bottle(self, "Bottle", Vector3(-1.9, 0.45, 0.3))
 	paint(C_BLACK)
-	grabbable(box(Vector3(-1.62, 0.46, 0.05), Vector3(0.05, 0.02, 0.16), SOLID, "Remote"), 0.01)
+	Props.remote(self, "Remote", Vector3(-1.62, 0.45, 0.05))
+	_alarm_clock(Vector3(-1.65, 0.45, 0.5))
 	paint(C_RED)
 	box(Vector3(-1.95, 0.465, -0.05), Vector3(0.22, 0.03, 0.3), SOLID, "Magazine")
 
@@ -380,43 +422,54 @@ func _build_living_room() -> void:
 	paint(C_WHITE)
 	cyl(Vector3(1.5, 0.81, -1.4), 0.16, 0.07, HOLLOW, "FruitBowl")
 	paint(C_RED)
-	sph(Vector3(1.45, 0.86, -1.38), 0.04, SOLID, "Apple")
-	sph(Vector3(1.56, 0.86, -1.43), 0.04, SOLID, "Apple")
-	# One chair knocked over near the window
-	paint(C_WOOD)
-	box(Vector3(-0.6, 0.22, -2.4), Vector3(0.45, 0.45, 0.05), SOLID, "FallenChairSeat")
-	box(Vector3(-0.6, 0.03, -2.0), Vector3(0.45, 0.05, 0.55), SOLID, "FallenChairBack")
+	food(sph(Vector3(1.45, 0.86, -1.38), 0.04, SOLID, "Apple"), Color(1.0, 0.15, 0.12))
+	food(sph(Vector3(1.56, 0.86, -1.43), 0.04, SOLID, "Apple"), Color(1.0, 0.15, 0.12))
+	paint(Color(0.9, 0.8, 0.25))
+	var banana := food(cyl(Vector3(1.5, 0.87, -1.32), 0.018, 0.17, SOLID, "Banana"), Color(1.0, 0.9, 0.2))
+	banana.rotation_degrees = Vector3(0, 30, 80)
 
 	# Bookshelf against the south wall
 	shelf(Vector3(2.5, 0, 2.85), 0, 1.2, 1.9, 0.3, 4)
 
 	# TV corner (screen = glass)
 	paint(C_DARKWOOD)
-	box(Vector3(3.75, 0.25, 1.8), Vector3(0.4, 0.5, 1.4), HOLLOW, "TVStand")
+	interactive(box(Vector3(3.75, 0.25, 1.8), Vector3(0.4, 0.5, 1.4), HOLLOW, "TVStand"), "tv_switch")
 	paint(C_BLACK)
-	box(Vector3(3.9, 0.88, 1.8), Vector3(0.06, 0.65, 1.1), SOLID, "TV")
+	interactive(box(Vector3(3.9, 0.88, 1.8), Vector3(0.06, 0.65, 1.1), SOLID, "TV"), "tv_switch")
 	var screen := box(Vector3(3.865, 0.88, 1.8), Vector3(0.01, 0.56, 1.0), GLASS, "TVScreen")
-	(screen.get_child(1) as MeshInstance3D).material_override = _screen_mat
+	interactive(screen, "tv_switch")
+	(screen.get_child(1) as MeshInstance3D).material_override = tv_screen_mat
 	box(Vector3(3.75, 0.56, 1.25), Vector3(0.18, 0.12, 0.25), SOLID, "GameConsole")
 
-	# Wardrobe, cardboard box, entry corner
+	# Wardrobe, entry corner
 	paint(C_WOOD)
 	box(Vector3(3.45, 1.0, -2.65), Vector3(1.0, 2.0, 0.6), HOLLOW, "Wardrobe")
-	paint(C_CARDBOARD)
-	box(Vector3(0.4, 0.2, 1.9), Vector3(0.5, 0.4, 0.4), HOLLOW, "CardboardBox")
-	box(Vector3(0.45, 0.5, 1.92), Vector3(0.35, 0.2, 0.3), HOLLOW, "SmallBox")
+	# Coat rack: pole with pegs at the top, a coat hanging from one peg
 	paint(C_DARKWOOD)
 	cyl(Vector3(-3.4, 0.9, 2.65), 0.025, 1.8, SOLID, "CoatRack")
 	cyl(Vector3(-3.4, 0.02, 2.65), 0.2, 0.04, SOLID, "CoatRackBase")
+	sph(Vector3(-3.4, 1.82, 2.65), 0.04, SOLID, "CoatRackTop")
+	for a in [0, 90, 180, 270]:
+		var peg := cyl(Vector3(-3.4, 1.7, 2.65) + Vector3(sin(deg_to_rad(a)), 0, cos(deg_to_rad(a))) * 0.08, 0.012, 0.16, SOLID, "CoatPeg")
+		peg.rotation_degrees = Vector3(70, a, 0)
 	paint(C_BEIGE)
-	box(Vector3(-3.4, 1.35, 2.75), Vector3(0.4, 0.75, 0.12), SOLID, "Coat")
+	box(Vector3(-3.4, 1.62, 2.77), Vector3(0.36, 0.1, 0.1), SOLID, "CoatShoulders")
+	box(Vector3(-3.4, 1.22, 2.79), Vector3(0.42, 0.72, 0.12), SOLID, "Coat")
 	paint(C_METAL)
 	cyl(Vector3(-2.85, 0.25, 2.8), 0.12, 0.5, HOLLOW, "UmbrellaStand")
 	cyl(Vector3(-2.85, 0.55, 2.8), 0.02, 0.9, SOLID, "Umbrella")
+	# Shoe bench by the front door, two pairs on it
+	paint(C_WOOD)
+	box(Vector3(-0.9, 0.42, 2.82), Vector3(0.9, 0.04, 0.32), SOLID, "ShoeBench")
+	box(Vector3(-0.9, 0.12, 2.82), Vector3(0.9, 0.03, 0.32), SOLID, "ShoeBenchShelf")
+	for sx in [-1, 1]:
+		box(Vector3(-0.9 + sx * 0.43, 0.2, 2.82), Vector3(0.04, 0.4, 0.32), SOLID, "ShoeBenchSide")
 	paint(C_BLACK)
-	for i in 3:
-		box(Vector3(-1.3 + i * 0.32, 0.05, 2.75), Vector3(0.1, 0.1, 0.27), SOLID, "Shoe")
-		box(Vector3(-1.18 + i * 0.32, 0.05, 2.73), Vector3(0.1, 0.1, 0.27), SOLID, "Shoe")
+	for i in 2:
+		for k in 2:
+			var x := -1.2 + i * 0.4 + k * 0.12
+			box(Vector3(x, 0.155, 2.8), Vector3(0.09, 0.04, 0.26), SOLID, "ShoeSole")
+			box(Vector3(x, 0.2, 2.85), Vector3(0.085, 0.06, 0.14), SOLID, "Shoe")
 
 
 func _build_hallway() -> void:
@@ -442,7 +495,7 @@ func _build_hallway() -> void:
 	paint(C_WHITE)
 	cyl(Vector3(7.08, 0.92, -0.45), 0.06, 0.24, GLASS, "Vase")
 	paint(C_METAL)
-	grabbable(box(Vector3(6.9, 0.81, -0.42), Vector3(0.08, 0.01, 0.04), SOLID, "Keys"), 0.005)
+	Props.keys(self, "Keys", Vector3(6.9, 0.8, -0.42))
 	picture(Vector3(6.4, 1.5, -0.58), 0.5, 0.4, "z")
 	# Wall clock (its ticking comes from here)
 	paint(C_WHITE)
@@ -478,14 +531,20 @@ func _build_bathroom() -> void:
 	paint(C_WHITE)
 	box(Vector3(5.4, 0.28, -3.12), Vector3(1.7, 0.56, 0.72), HOLLOW, "Bathtub")
 	paint(C_METAL)
-	cyl(DRIP_POS, 0.02, 0.15, SOLID, "BathTap")
+	# Tap: a pipe out of the wall above the tub rim, bending down into a spout (the drip comes from here)
+	cyl(Vector3(DRIP_POS.x, 0.66, -3.44), 0.018, 0.2, SOLID, "BathTapPipe")
+	cyl(Vector3(DRIP_POS.x, 0.76, -3.4), 0.018, 0.12, SOLID, "BathTap").rotation_degrees.x = 90
+	cyl(Vector3(DRIP_POS.x, 0.72, -3.345), 0.015, 0.08, SOLID, "BathSpout")
 	# Toilet
 	paint(C_WHITE)
 	cyl(Vector3(6.45, 0.2, -2.0), 0.19, 0.4, HOLLOW, "Toilet")
 	cyl(Vector3(6.45, 0.415, -2.0), 0.2, 0.03, SOLID, "ToiletLid")
 	box(Vector3(6.68, 0.6, -2.0), Vector3(0.2, 0.42, 0.45), HOLLOW, "ToiletTank")
 	paint(C_WHITE)
-	cyl(Vector3(6.72, 0.85, -1.4), 0.06, 0.11, SOLID, "ToiletPaper").rotation_degrees.x = 90
+	paint(C_METAL)
+	box(Vector3(6.77, 0.85, -1.4), Vector3(0.06, 0.03, 0.03), SOLID, "PaperHolder")
+	paint(C_WHITE)
+	cyl(Vector3(6.73, 0.81, -1.4), 0.055, 0.11, SOLID, "ToiletPaper").rotation_degrees.x = 90
 	# Sink cabinet, basin, tap, mirror
 	paint(C_WOOD)
 	box(Vector3(4.68, 0.4, -2.0), Vector3(0.5, 0.8, 0.6), HOLLOW, "SinkCabinet")
@@ -495,11 +554,18 @@ func _build_bathroom() -> void:
 	cyl(Vector3(4.5, 0.97, -2.0), 0.015, 0.14, SOLID, "SinkTap")
 	box(Vector3(4.42, 1.5, -2.0), Vector3(0.02, 0.7, 0.6), GLASS, "Mirror")
 	paint(C_WHITE)
-	grabbable(cyl(Vector3(4.75, 0.97, -2.2), 0.03, 0.14, HOLLOW, "Toothbrushes"), 0.07)
-	grabbable(cyl(Vector3(4.75, 0.97, -1.8), 0.035, 0.14, SOLID, "Soap"), 0.07)
+	Props.toothbrush_cup(self, "Toothbrushes", Vector3(4.75, 0.9, -2.2))
+	Props.soap(self, "Soap", Vector3(4.75, 0.9, -1.8))
 	# Towel, bath mat, bin
 	paint(C_FABRIC)
-	box(Vector3(6.77, 1.2, -3.0), Vector3(0.04, 0.6, 0.4), SOLID, "Towel")
+	# Towel draped over a rail on the divider wall
+	paint(C_METAL)
+	cyl(Vector3(6.75, 1.5, -3.0), 0.012, 0.5, SOLID, "TowelRail").rotation_degrees.x = 90
+	for sz in [-1, 1]:
+		box(Vector3(6.775, 1.5, -3.0 + sz * 0.24), Vector3(0.05, 0.03, 0.02), SOLID, "TowelRailBracket")
+	paint(C_FABRIC)
+	box(Vector3(6.73, 1.2, -3.0), Vector3(0.03, 0.6, 0.4), SOLID, "Towel")
+	box(Vector3(6.765, 1.25, -3.0), Vector3(0.02, 0.5, 0.4), SOLID, "TowelBack")
 	box(Vector3(5.4, 0.014, -2.45), Vector3(0.8, 0.012, 0.5), SOLID, "BathMat")
 	paint(C_METAL)
 	cyl(Vector3(6.55, 0.15, -1.15), 0.11, 0.3, HOLLOW, "Bin")
@@ -518,13 +584,14 @@ func _build_study() -> void:
 	box(Vector3(8.75, 0.77, -3.0), Vector3(0.06, 0.03, 0.1), SOLID, "Mouse")
 	box(Vector3(7.85, 0.95, -3.3), Vector3(0.2, 0.4, 0.4), HOLLOW, "ComputerCase")
 	paint(C_WHITE)
-	grabbable(cyl(Vector3(8.95, 0.81, -3.0), 0.045, 0.1, HOLLOW, "StudyMug"), 0.05)
+	Props.mug(self, "StudyMug", Vector3(8.95, 0.76, -3.0), Color(0.3, 0.45, 0.7))
 	paint(C_BEIGE)
 	box(Vector3(8.0, 0.77, -2.95), Vector3(0.22, 0.02, 0.3), SOLID, "Papers")
 	# Office chair
 	paint(C_BLACK)
 	cyl(Vector3(8.4, 0.48, -2.5), 0.24, 0.07, SOLID, "ChairSeat")
 	box(Vector3(8.4, 0.82, -2.25), Vector3(0.42, 0.52, 0.06), SOLID, "ChairBack")
+	box(Vector3(8.4, 0.53, -2.27), Vector3(0.05, 0.1, 0.05), SOLID, "ChairBackPost")
 	cyl(Vector3(8.4, 0.25, -2.5), 0.025, 0.42, SOLID, "ChairPole")
 	cyl(Vector3(8.4, 0.04, -2.5), 0.28, 0.04, SOLID, "ChairBase")
 	# Bookcase on the divider wall
@@ -533,7 +600,10 @@ func _build_study() -> void:
 	paint(C_METAL)
 	box(Vector3(9.55, 0.55, -3.2), Vector3(0.45, 1.1, 0.55), HOLLOW, "FilingCabinet")
 	paint(C_FABRIC)
-	sph(Vector3(9.55, 1.28, -3.2), 0.15, HOLLOW, "Globe")
+	sph(Vector3(9.55, 1.32, -3.2), 0.15, HOLLOW, "Globe")
+	paint(C_DARKWOOD)
+	cyl(Vector3(9.55, 1.11, -3.2), 0.07, 0.02, SOLID, "GlobeStand")
+	cyl(Vector3(9.55, 1.15, -3.2), 0.012, 0.08, SOLID, "GlobeAxis")
 	# Armchair + floor lamp
 	paint(C_RED)
 	box(Vector3(9.4, 0.22, -2.0), Vector3(0.75, 0.44, 0.75), SOLID, "Armchair")
@@ -559,7 +629,11 @@ func _build_bedroom() -> void:
 
 	# Bed with headboard, pillows, duvet
 	paint(C_WOOD)
-	box(Vector3(8.8, 0.2, 4.0), Vector3(2.0, 0.4, 1.4), SOLID, "BedFrame")
+	# the frame stands on legs: there is room to slide under it (0.3 m)
+	box(Vector3(8.8, 0.35, 4.0), Vector3(2.0, 0.1, 1.4), SOLID, "BedFrame")
+	for lx in [-0.93, 0.93]:
+		for lz in [-0.63, 0.63]:
+			box(Vector3(8.8 + lx, 0.15, 4.0 + lz), Vector3(0.08, 0.3, 0.08), SOLID, "BedLeg")
 	box(Vector3(9.76, 0.55, 4.0), Vector3(0.08, 1.1, 1.4), SOLID, "Headboard")
 	paint(C_WHITE)
 	box(Vector3(8.8, 0.47, 4.0), Vector3(1.95, 0.14, 1.36), SOLID, "Mattress")
@@ -567,17 +641,14 @@ func _build_bedroom() -> void:
 	box(Vector3(9.45, 0.6, 4.32), Vector3(0.35, 0.12, 0.55), SOLID, "Pillow")
 	paint(C_FABRIC)
 	box(Vector3(8.5, 0.57, 4.0), Vector3(1.3, 0.07, 1.42), SOLID, "Duvet")
-	paint(C_BLACK)
-	box(Vector3(7.65, 0.04, 3.4), Vector3(0.1, 0.08, 0.26), SOLID, "Slipper")
-	box(Vector3(7.65, 0.04, 3.6), Vector3(0.1, 0.08, 0.26), SOLID, "Slipper")
 
 	# Nightstand (hollow) with lamp, glass of water, phone
 	paint(C_WOOD)
 	box(Vector3(9.6, 0.3, 2.95), Vector3(0.4, 0.6, 0.4), HOLLOW, "Nightstand")
 	lamp_table(Vector3(9.65, 0.6, 3.05))
-	grabbable(cyl(Vector3(9.5, 0.66, 2.85), 0.035, 0.12, GLASS, "WaterGlass"), 0.06)
+	Props.drinking_glass(self, "WaterGlass", Vector3(9.5, 0.6, 2.85))
 	paint(C_BLACK)
-	grabbable(box(Vector3(9.55, 0.61, 2.8), Vector3(0.07, 0.01, 0.15), SOLID, "Phone"), 0.005)
+	Props.phone(self, "Phone", Vector3(9.55, 0.6, 2.8))
 
 	# Desk + chair against the west wall, laptop, books
 	table(Vector3(4.75, 0.74, 2.2), Vector3(0.6, 0.04, 1.2))
@@ -617,8 +688,10 @@ func _build_kitchen() -> void:
 	box(Vector3(13.35, H / 2, -2.6), Vector3(1.7, H, T))
 	box(Vector3(12.05, 2.35, -2.6), Vector3(0.9, 0.5, T))
 	door(Vector3(11.6, 0, -2.6), 0.9, "LaundryDoor", -1)
-	# South and east walls
-	box(Vector3(12.1, H / 2, 2.6), Vector3(4.4, H, T))
+	# South wall with an open arch to the back hall (x 10.35..11.25), east wall
+	box(Vector3(12.775, H / 2, 2.6), Vector3(3.05, H, T))
+	box(Vector3(10.125, H / 2, 2.6), Vector3(0.45, H, T))
+	box(Vector3(10.8, 2.35, 2.6), Vector3(0.9, 0.5, T))
 	box(Vector3(14.1, H / 2, 0), Vector3(T, H, 5.4))
 
 	ceiling_light(Vector3(12.0, 0, 0), 5.0, 0.9)
@@ -650,7 +723,7 @@ func _build_kitchen() -> void:
 	paint(C_WOOD)
 	box(Vector3(13.45, 0.91, 0.1), Vector3(0.3, 0.02, 0.4), SOLID, "CuttingBoard")
 	paint(C_METAL)
-	grabbable(box(Vector3(13.45, 0.93, 0.05), Vector3(0.03, 0.01, 0.25), SOLID, "Knife"), 0.005)
+	Props.knife(self, "Knife", Vector3(13.45, 0.92, 0.05)).rotation_degrees.y = 90
 
 	# Round table and chairs
 	paint(C_WOOD)
@@ -660,14 +733,12 @@ func _build_kitchen() -> void:
 	chair(Vector3(11.8, 0, 1.75), 0)
 	chair(Vector3(11.15, 0, 1.1), -90)
 	paint(C_WHITE)
-	cyl(Vector3(11.7, 0.78, 1.0), 0.11, 0.02, SOLID, "Plate")
-	grabbable(cyl(Vector3(11.95, 0.82, 1.15), 0.035, 0.1, GLASS, "JuiceGlass"), 0.05)
+	Props.drinking_glass(self, "JuiceGlass", Vector3(12.05, 0.77, 1.3))
+	_dinner(Vector3(11.75, 0.77, 1.0))
 
-	# Bucket, trash can
-	paint(C_BLUEGREY)
-	cyl(Vector3(11.0, 0.15, -2.1), 0.15, 0.3, HOLLOW, "Bucket")
+	# Trash can
 	paint(C_METAL)
-	cyl(Vector3(10.45, 0.35, 2.2), 0.17, 0.7, HOLLOW, "TrashCan")
+	cyl(Vector3(12.6, 0.35, 2.25), 0.17, 0.7, HOLLOW, "TrashCan")
 
 
 func _build_laundry() -> void:
@@ -700,9 +771,207 @@ func _build_laundry() -> void:
 	box(Vector3(11.4, 0.85, -4.05), Vector3(1.2, 0.03, 0.35), SOLID, "IroningBoard")
 	cyl(Vector3(11.0, 0.42, -4.05), 0.015, 0.84, SOLID, "IroningLeg")
 	cyl(Vector3(11.8, 0.42, -4.05), 0.015, 0.84, SOLID, "IroningLeg")
-	grabbable(box(Vector3(11.75, 0.9, -4.05), Vector3(0.22, 0.08, 0.12), HOLLOW, "Iron"), 0.04)
+	Props.iron(self, "Iron", Vector3(11.75, 0.865, -4.05))
 	paint(C_WOOD)
 	var broom := cyl(Vector3(13.85, 0.7, -3.0), 0.015, 1.4, SOLID, "Broom")
 	broom.rotation_degrees.z = 12
 	paint(C_BLUEGREY)
 	cyl(Vector3(13.4, 0.2, -2.95), 0.14, 0.4, HOLLOW, "Detergent")
+
+
+# --- Food (smelled, so it shows in colour) --------------------------------------
+
+## Food is tagged with the colour of its smell (`smell` group, meta "smell_color").
+func food(body: StaticBody3D, smell: Color) -> StaticBody3D:
+	body.add_to_group("smell")
+	body.set_meta("smell_color", smell)
+	return body
+
+
+## A dinner plate on the kitchen table: fried chicken and broccoli.
+func _dinner(at: Vector3) -> void:
+	paint(C_WHITE)
+	cyl(at, 0.14, 0.015, SOLID, "DinnerPlate")
+	var orange := Color(1.0, 0.55, 0.12)
+	var green := Color(0.35, 0.95, 0.3)
+	paint(Color(0.75, 0.45, 0.15))
+	for k in 2: # drumsticks: a fat end and a thin bone
+		var d := Vector3(at.x - 0.05, at.y + 0.035, at.z - 0.04 + k * 0.07)
+		food(box(d, Vector3(0.08, 0.045, 0.055), SOLID, "FriedChicken"), orange)
+		var bone := food(cyl(d + Vector3(0.065, -0.01, 0.0), 0.009, 0.06, SOLID, "ChickenBone"), orange)
+		bone.rotation_degrees.z = 90
+	paint(Color(0.2, 0.5, 0.18))
+	for k in 3: # broccoli florets: a stalk and a bushy head
+		var b := Vector3(at.x + 0.06, at.y + 0.022, at.z - 0.05 + k * 0.045)
+		food(cyl(b, 0.008, 0.03, SOLID, "BroccoliStalk"), green)
+		food(sph(b + Vector3(0, 0.03, 0), 0.022, SOLID, "Broccoli"), green)
+
+
+# --- Rooms (how sound travels) -----------------------------------------------
+
+var rooms := {}     # name -> AABB (walls included up to their centre line)
+var room_floor := {} # name -> 0 (ground) or 1 (upstairs)
+var passages := []  # [room_a, room_b, door name ("" = always open), factor]
+var _doors := {}    # door name -> panel
+var _adj := {}      # room -> Array of [other room, factor, door name]: every way sound can go
+
+
+func add_room(name: String, x0: float, x1: float, z0: float, z1: float, y0 := 0.0) -> void:
+	rooms[name] = AABB(Vector3(x0, y0 - 0.4, z0), Vector3(x1 - x0, H + 0.45, z1 - z0))
+	room_floor[name] = 1 if y0 > 1.0 else 0
+
+
+## An opening between two rooms: a doorway (door_name "") or a door. `factor` < 1 for a
+## long way round (e.g. up the stairwell).
+func link(a: String, b: String, door_name := "", factor := 1.0) -> void:
+	passages.append([a, b, door_name, factor])
+
+
+func _register_rooms() -> void:
+	add_room("living", -4.1, 4.1, -3.1, 3.1)
+	add_room("hallway", 4.1, 10.1, -0.7, 0.7)
+	add_room("bathroom", 4.3, 6.9, -3.6, -0.7)
+	add_room("study", 6.9, 9.9, -3.6, -0.7)
+	add_room("bedroom", 4.3, 9.9, 0.7, 5.1)
+	add_room("kitchen", 10.1, 14.1, -2.6, 2.6)
+	add_room("laundry", 10.1, 14.1, -4.8, -2.6)
+	add_room("backhall", 9.9, 14.1, 2.6, 5.1)
+	add_room("stairhall", 14.1, 17.5, 0.6, 5.1)
+	add_room("workshop", 14.1, 17.5, -4.8, 0.6)
+	link("living", "hallway")
+	link("hallway", "bathroom", "BathroomDoor")
+	link("hallway", "study", "StudyDoor")
+	link("hallway", "bedroom", "BedroomDoor")
+	link("hallway", "kitchen")
+	link("kitchen", "laundry", "LaundryDoor")
+	link("kitchen", "backhall")
+	link("backhall", "stairhall")
+	link("stairhall", "workshop", "WorkshopDoor")
+	Upstairs.register_rooms(self) # upstairs rooms + the stairwell link
+	for n in find_children("*", "StaticBody3D", true, false):
+		if is_door(n):
+			_doors[String(n.name)] = n
+	_build_acoustics()
+
+
+## Which room a point is in ("" if none, e.g. outside).
+func room_at(p: Vector3) -> String:
+	for name in rooms:
+		if (rooms[name] as AABB).has_point(p):
+			return name
+	return ""
+
+
+## Can sound get from room a to room b through open doorways? A room with every
+## door shut is sealed from the rest of the house.
+func connected(a: String, b: String) -> bool:
+	if a == b:
+		return true
+	if a == "" or b == "":
+		return false
+	var seen := {a: true}
+	var todo := [a]
+	while not todo.is_empty():
+		var r: String = todo.pop_back()
+		for p in passages:
+			var other := ""
+			if p[0] == r:
+				other = p[1]
+			elif p[1] == r:
+				other = p[0]
+			else:
+				continue
+			if seen.has(other):
+				continue
+			var dn: String = p[2]
+			if dn != "" and not bool(_doors[dn].get_meta("open")):
+				continue
+			if other == b:
+				return true
+			seen[other] = true
+			todo.append(other)
+	return false
+
+
+## A wind-up alarm clock: press E on it, it ticks for a few seconds, then rings very loudly
+## (main.gd). Meant for testing that loud sounds still show through walls. The body is the
+## round case; bells, hammer and legs are its children, so all of it "makes the sound".
+func _alarm_clock(at: Vector3) -> void:
+	paint(C_RED)
+	var clock := cyl(at + Vector3(0, 0.08, 0), 0.08, 0.05, HOLLOW, "AlarmClock")
+	clock.rotation_degrees.x = 90
+	interactive(clock, "alarm")
+	# children are positioned in the clock's own (rotated) space: local y is the face normal
+	paint(C_WHITE)
+	cyl(Vector3(0, 0.026, 0), 0.066, 0.006, SOLID, "AlarmFace", clock)
+	paint(C_METAL)
+	for sx in [-1, 1]:
+		var bell := sph(Vector3(sx * 0.055, 0.0, -0.075), 0.032, HOLLOW, "AlarmBell", clock)
+		# a flattened dome: squash the mesh, and give it a matching hull (Jolt can't scale a sphere unevenly)
+		var squash := Vector3(1, 0.5, 1)
+		var bell_mesh := bell.find_children("*", "MeshInstance3D", false, false)[0] as MeshInstance3D
+		var hull := ConvexPolygonShape3D.new()
+		var pts := PackedVector3Array()
+		for v in bell_mesh.mesh.get_faces():
+			pts.append(v * squash)
+		hull.points = pts
+		bell_mesh.scale = squash
+		(bell.find_children("*", "CollisionShape3D", false, false)[0] as CollisionShape3D).shape = hull
+		cyl(Vector3(sx * 0.03, 0.0, -0.05), 0.004, 0.05, SOLID, "AlarmBellPost", clock).rotation_degrees = Vector3(90, 0, sx * -30)
+	cyl(Vector3(0, 0.0, -0.1), 0.005, 0.03, SOLID, "AlarmHammer", clock)
+	for sx in [-1, 1]:
+		var leg := box(Vector3(sx * 0.05, 0.0, 0.07), Vector3(0.012, 0.03, 0.03), SOLID, "AlarmLeg", clock)
+		leg.rotation_degrees.x = 0
+
+
+# --- Acoustics: how much of a sound gets from one room to another ---------------
+
+## Every route sound can take: openings (doorways, doors, the stairwell), and straight
+## through a wall or a floor into any neighbouring room.
+func _build_acoustics() -> void:
+	_adj.clear()
+	for name in rooms:
+		_adj[name] = []
+	for p in passages:
+		_adj[p[0]].append([p[1], p[3], p[2]])
+		_adj[p[1]].append([p[0], p[3], p[2]])
+	var names := rooms.keys()
+	for i in names.size():
+		for j in range(i + 1, names.size()):
+			var a: AABB = rooms[names[i]]
+			var b: AABB = rooms[names[j]]
+			var ox := minf(a.end.x, b.end.x) - maxf(a.position.x, b.position.x)
+			var oz := minf(a.end.z, b.end.z) - maxf(a.position.z, b.position.z)
+			var through := 0.0
+			if room_floor[names[i]] == room_floor[names[j]]:
+				if (absf(ox) <= 0.45 and oz > 0.6) or (absf(oz) <= 0.45 and ox > 0.6):
+					through = WALL
+			elif ox > 0.6 and oz > 0.6:
+				through = FLOOR_SLAB
+			if through > 0.0:
+				_adj[names[i]].append([names[j], through, ""])
+				_adj[names[j]].append([names[i], through, ""])
+
+
+## The fraction of a sound's loudness that gets from room `a` to room `b`: the best route
+## through the house, where every closed door, wall and floor on the way multiplies it down
+## (two walls = much quieter than one). 1 = a clear path.
+func transmission(a: String, b: String) -> float:
+	if a == b or a == "" or b == "":
+		return 1.0
+	var best := {a: 1.0}
+	var todo := [a]
+	while not todo.is_empty():
+		var r: String = todo.pop_front()
+		var tr: float = best[r]
+		for e in _adj[r]:
+			var f: float = e[1]
+			var dn: String = e[2]
+			if dn != "" and not bool(_doors[dn].get_meta("open")):
+				f *= DOOR_CLOSED
+			var t := tr * f
+			if t > float(best.get(e[0], 0.0)):
+				best[e[0]] = t
+				todo.append(e[0])
+	return float(best.get(b, 0.0))
+
